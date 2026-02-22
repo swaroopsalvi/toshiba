@@ -5,6 +5,8 @@ import { HttpError } from '../middleware/errorHandler';
 
 // In-memory data store
 const employees: Map<string, Employee> = new Map();
+// Secondary index for O(1) email uniqueness checks (lowercase email → id)
+const emailIndex: Map<string, string> = new Map();
 
 export function getAllEmployees(req: Request, res: Response): void {
   const { department } = req.query;
@@ -34,17 +36,15 @@ export function createEmployee(req: Request, res: Response, next: NextFunction):
   const body = req.body as CreateEmployeeDto;
 
   // Enforce unique email
-  const emailExists = Array.from(employees.values()).some(
-    (emp) => emp.email.toLowerCase() === body.email.toLowerCase()
-  );
-  if (emailExists) {
+  const emailKey = body.email.toLowerCase().trim();
+  if (emailIndex.has(emailKey)) {
     return next(new HttpError(`An employee with email '${body.email}' already exists`, 400));
   }
 
   const newEmployee: Employee = {
     id: uuidv4(),
     name: body.name.trim(),
-    email: body.email.toLowerCase().trim(),
+    email: emailKey,
     department: body.department.trim(),
     position: body.position.trim(),
     salary: body.salary,
@@ -52,6 +52,7 @@ export function createEmployee(req: Request, res: Response, next: NextFunction):
   };
 
   employees.set(newEmployee.id, newEmployee);
+  emailIndex.set(emailKey, newEmployee.id);
   res.status(201).json({ data: newEmployee });
 }
 
@@ -67,10 +68,9 @@ export function updateEmployee(req: Request, res: Response, next: NextFunction):
 
   // Enforce unique email if email is being updated
   if (body.email) {
-    const emailExists = Array.from(employees.values()).some(
-      (emp) => emp.id !== id && emp.email.toLowerCase() === body.email!.toLowerCase()
-    );
-    if (emailExists) {
+    const emailKey = body.email.toLowerCase().trim();
+    const ownerOfEmail = emailIndex.get(emailKey);
+    if (ownerOfEmail !== undefined && ownerOfEmail !== id) {
       return next(new HttpError(`An employee with email '${body.email}' already exists`, 400));
     }
   }
@@ -84,6 +84,12 @@ export function updateEmployee(req: Request, res: Response, next: NextFunction):
     ...(body.salary !== undefined && { salary: body.salary }),
   };
 
+  // Keep email index in sync
+  if (body.email !== undefined) {
+    emailIndex.delete(existing.email);
+    emailIndex.set(updated.email, id);
+  }
+
   employees.set(id, updated);
   res.status(200).json({ data: updated });
 }
@@ -95,6 +101,7 @@ export function deleteEmployee(req: Request, res: Response, next: NextFunction):
     return next(new HttpError(`Employee with id '${id}' not found`, 404));
   }
 
+  emailIndex.delete(employees.get(id)!.email);
   employees.delete(id);
   res.status(204).send();
 }
@@ -102,4 +109,5 @@ export function deleteEmployee(req: Request, res: Response, next: NextFunction):
 // Exposed for testing — allows resetting the in-memory store between tests
 export function clearEmployees(): void {
   employees.clear();
+  emailIndex.clear();
 }
